@@ -1,135 +1,83 @@
 package topic
 
 import (
-	"fmt"
+	"os"
 	"testing"
 
-	"github.com/iamvineettiwari/go-distributed-queue/partition"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func createPath(test *testing.T) {
-	test.Helper()
+func TestNewTopic(t *testing.T) {
+	rootPath := createTempDir(t)
+	defer os.RemoveAll(rootPath)
 
-	partition.RootPath = test.TempDir()
-	partition.ConfigPath = test.TempDir()
+	id := ""
+	name := "test-topic"
+	partitionNo := 1
 
+	topic, err := NewTopic(rootPath, id, name, partitionNo)
+	assert.NoError(t, err, "Expected no error when creating a new topic")
+	assert.NotNil(t, topic, "Expected topic to be created successfully")
+	assert.Equal(t, name, topic.GetName(), "Expected topic name to match")
+	assert.NotEmpty(t, topic.GetId(), "Expected topic ID to be generated if not provided")
+	assert.NotNil(t, topic.GetPartition(), "Expected topic partition to be initialized")
 }
 
-func TestNewTopic(test *testing.T) {
-	topicName := "test-topic"
-	noOfPartitions := 3
+func TestTopicWriteAndRead(t *testing.T) {
+	rootPath := createTempDir(t)
+	defer os.RemoveAll(rootPath)
 
-	createPath(test)
-	t, err := NewTopic(topicName, noOfPartitions)
-	require.NoError(test, err, "creating topic should not produce an error")
-	require.NotNil(test, t, "topic should not be nil")
-	test.Cleanup(t.CleanUp)
+	name := "test-topic"
+	partitionNo := 1
 
-	assert.Equal(test, noOfPartitions, t.GetNoOfPartitions(), "topic should have the correct number of partitions")
+	topic, err := NewTopic(rootPath, "", name, partitionNo)
+	assert.NoError(t, err, "Expected no error when creating a new topic")
+	defer topic.CleanUp()
+
+	key := "key1"
+	value := "value1"
+	err = topic.Write(key, value)
+	assert.NoError(t, err, "Expected no error when writing data")
+
+	clientID := "client1"
+	numRecords := 1
+	data, err := topic.Read(clientID, numRecords)
+	assert.NoError(t, err, "Expected no error when reading data")
+	assert.Len(t, data, 1, "Expected to read one record")
+
+	assert.Equal(t, key, data[0].Key, "Expected key to match")
+	assert.Equal(t, value, data[0].Value, "Expected value to match")
 }
 
-func TestTopic_WriteAndRead(test *testing.T) {
-	topicName := "test-topic"
-	noOfPartitions := 3
+func TestTopicGetIdAndName(t *testing.T) {
+	rootPath := createTempDir(t)
+	defer os.RemoveAll(rootPath)
 
-	createPath(test)
+	name := "test-topic"
+	partitionNo := 1
+	id := "test-id"
 
-	t, err := NewTopic(topicName, noOfPartitions)
-	require.NoError(test, err, "creating topic should not produce an error")
-	require.NotNil(test, t, "topic should not be nil")
+	topic, err := NewTopic(rootPath, id, name, partitionNo)
+	assert.NoError(t, err, "Expected no error when creating a new topic")
 
-	_, err = t.Write("key1", "value1")
-	require.NoError(test, err, "writing data should not produce an error")
-
-	_, err = t.Write("key2", "value2")
-	require.NoError(test, err, "writing data should not produce an error")
-
-	data, err := t.Read("client1", 1)
-	require.NoError(test, err, "reading data should not produce an error")
-	assert.NotEmpty(test, data, "data read from the topic should not be empty")
-	assert.GreaterOrEqual(test, len(data), 2, "there should be at least two items in the data")
-	test.Cleanup(t.CleanUp)
+	assert.Equal(t, id, topic.GetId(), "Expected topic ID to match the provided ID")
+	assert.Equal(t, name, topic.GetName(), "Expected topic name to match the provided name")
 }
 
-func TestTopic_WriteAndReadRoundRobin(test *testing.T) {
-	topicName := "test-topic"
-	noOfPartitions := 2
+func TestTopicCleanUp(t *testing.T) {
+	rootPath := createTempDir(t)
+	defer os.RemoveAll(rootPath)
 
-	createPath(test)
+	name := "test-topic"
+	partitionNo := 1
 
-	t, err := NewTopic(topicName, noOfPartitions)
-	require.NoError(test, err, "creating topic should not produce an error")
-	require.NotNil(test, t, "topic should not be nil")
+	topic, err := NewTopic(rootPath, "", name, partitionNo)
+	assert.NoError(t, err, "Expected no error when creating a new topic")
 
-	lastId := -1
-
-	for i := 0; i < 4; i++ {
-		id, err := t.Write(fmt.Sprintf("key_%d", i), fmt.Sprintf("value_%d", i))
-		require.NoError(test, err, "writing data should not produce an error")
-		require.NotEqual(test, id, lastId, "last id should not be equal to current id")
-		lastId = id
-	}
-
-	d, err := t.ReadFromPartition("client1", 1, 5)
-	require.NoError(test, err, "no error expected")
-	require.Equal(test, 2, len(d), "Required 2 data from current partition")
-
-	d, err = t.ReadFromPartition("client1", 2, 15)
-	require.NoError(test, err, "no error expected")
-	require.Equal(test, 2, len(d), "Required 2 data from current partition")
-	test.Cleanup(t.CleanUp)
+	topic.CleanUp()
 }
 
-func TestTopic_WriteToPartitionAndReadFromPartition(test *testing.T) {
-	topicName := "test-topic"
-	noOfPartitions := 2
-	partitionID := 1
-
-	createPath(test)
-
-	t, err := NewTopic(topicName, noOfPartitions)
-	require.NoError(test, err, "creating topic should not produce an error")
-	require.NotNil(test, t, "topic should not be nil")
-
-	err = t.WriteToPartition("key1", "value1", partitionID)
-	require.NoError(test, err, "writing data to a specific partition should not produce an error")
-
-	data, err := t.ReadFromPartition("client1", partitionID, 1)
-	require.NoError(test, err, "reading data from a specific partition should not produce an error")
-	require.NotEmpty(test, data, "data read from the partition should not be empty")
-
-	assert.Equal(test, "value1", data[0].Value, "data value should match what was written")
-	assert.Equal(test, "key1", data[0].Key, "data key should match what was written")
-	test.Cleanup(t.CleanUp)
-}
-
-func TestTopic_ReadFromInvalidPartition(test *testing.T) {
-	topicName := "test-topic"
-	noOfPartitions := 2
-
-	createPath(test)
-
-	t, err := NewTopic(topicName, noOfPartitions)
-	require.NoError(test, err, "creating topic should not produce an error")
-	require.NotNil(test, t, "topic should not be nil")
-
-	_, err = t.ReadFromPartition("client1", 99, 5)
-	assert.Error(test, err, "reading from an invalid partition should produce an error")
-	test.Cleanup(t.CleanUp)
-}
-
-func TestTopic_WriteToInvalidPartition(test *testing.T) {
-	topicName := "test-topic"
-	noOfPartitions := 2
-	createPath(test)
-
-	t, err := NewTopic(topicName, noOfPartitions)
-	require.NoError(test, err, "creating topic should not produce an error")
-	require.NotNil(test, t, "topic should not be nil")
-
-	err = t.WriteToPartition("key1", "value1", 99)
-	assert.Error(test, err, "writing to an invalid partition should produce an error")
-	test.Cleanup(t.CleanUp)
+func createTempDir(t *testing.T) string {
+	t.Helper()
+	return t.TempDir()
 }

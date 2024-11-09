@@ -3,29 +3,19 @@ package main
 import (
 	"flag"
 	"log"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/iamvineettiwari/go-distributed-queue/server"
 )
 
-var serverType = flag.String("serverType", "", "type of server - server / coordinator")
 var address = flag.String("addr", "", "address <host:port> for current server")
 var coordinatorAdress = flag.String("cAddr", "", "address <host:port> for coordinator, seperated by comma `,`")
 var nMessagePerRead = flag.Int("mpr", 1, "no of message per read")
 
-func parseServerType() {
-	flag.Parse()
-
-	if *serverType == "" {
-		log.Fatal("serverType is required")
-	}
-
-	if *serverType != "server" && *serverType != "coordinator" {
-		log.Fatal("serverType must be server / coordinator")
-	}
-}
-
-func startBroker() {
+func getServer() *server.Server {
 	if strings.TrimSpace(*address) == "" {
 		log.Fatal("addr is required")
 	}
@@ -46,21 +36,28 @@ func startBroker() {
 		log.Fatal("cAddr is required")
 	}
 
-	server := server.NewServer(strings.TrimSpace(*address), *nMessagePerRead, processedCAdrr)
-	server.Start()
-}
+	server, err := server.NewServer(strings.TrimSpace(*address), *nMessagePerRead, processedCAdrr)
 
-func startCoordinator() {
+	if err != nil {
+		log.Fatal(err)
+	}
 
+	return server
 }
 
 func main() {
-	parseServerType()
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 
-	if *serverType == "server" {
-		startBroker()
-		return
-	}
+	flag.Parse()
+	server := getServer()
 
-	startCoordinator()
+	go func() {
+		for range quit {
+			server.Stop()
+			os.Exit(0)
+		}
+	}()
+
+	server.Start()
 }

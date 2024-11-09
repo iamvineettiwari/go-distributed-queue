@@ -17,7 +17,9 @@ type ServerRequest struct {
 }
 
 type ServerResponse struct {
-	Error     string
-	IsSuccess bool
-	Data      []byte
+	Error      string
+	IsSuccess  bool
+	Data       []byte
+	IsRedirect bool
+	Location   string
 }

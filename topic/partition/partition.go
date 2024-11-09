@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-var RootPath = "./static/data/"
-var ConfigPath = "./static/config/"
 var LogsFlushTime = 200 * time.Millisecond
 
 type Data struct {
@@ -44,40 +42,45 @@ type Partition struct {
 	topicName string
 	ticker    *time.Ticker
 
-	partitionLock *sync.RWMutex
-	configLogPath string
-	logStorePath  string
-	logOffset     int
-	lastLogOffset int
-	logSizeIndex  map[int]*SizeLog
-	clientOffset  map[string]*ClientOffset
+	partitionLock   *sync.RWMutex
+	configLogPath   string
+	logStorePath    string
+	offsetStorePath string
+	logOffset       int
+	lastLogOffset   int
+	logSizeIndex    map[int]*SizeLog
+	clientOffset    map[string]*ClientOffset
 }
 
-func NewPartition(id int, topicName, storePathName string) (*Partition, error) {
-	if _, err := os.Stat(ConfigPath); os.IsNotExist(err) {
-		if er := os.MkdirAll(ConfigPath, 0777); er != nil {
+func NewPartition(rootPath string, id int, topicName string) (*Partition, error) {
+	configPath := filepath.Join(rootPath, topicName, "/configs/")
+	dbPath := filepath.Join(rootPath, topicName, "/db/")
+
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		if er := os.MkdirAll(configPath, 0777); er != nil {
 			return nil, er
 		}
 	}
 
-	if _, err := os.Stat(RootPath); os.IsNotExist(err) {
-		if er := os.MkdirAll(RootPath, 0777); er != nil {
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		if er := os.MkdirAll(dbPath, 0777); er != nil {
 			return nil, er
 		}
 	}
 
 	partition := &Partition{
-		id:            id,
-		topicName:     topicName,
-		logStorePath:  filepath.Join(RootPath, storePathName),
-		configLogPath: filepath.Join(ConfigPath, fmt.Sprintf("%s_%d_size_idx.db", topicName, id)),
-		partitionLock: &sync.RWMutex{},
-		logSizeIndex:  make(map[int]*SizeLog),
-		clientOffset:  make(map[string]*ClientOffset),
-		ticker:        time.NewTicker(LogsFlushTime),
+		id:              id,
+		topicName:       topicName,
+		logStorePath:    filepath.Join(dbPath, fmt.Sprintf("%s_%d_store.db", topicName, id)),
+		configLogPath:   filepath.Join(configPath, fmt.Sprintf("%s_%d_size_idx.db", topicName, id)),
+		offsetStorePath: filepath.Join(configPath, fmt.Sprintf("%s_%d_client_offset.db", topicName, id)),
+		partitionLock:   &sync.RWMutex{},
+		logSizeIndex:    make(map[int]*SizeLog),
+		clientOffset:    make(map[string]*ClientOffset),
+		ticker:          time.NewTicker(LogsFlushTime),
 	}
 
-	if err := partition.loadSizeIndexes(); err != nil {
+	if err := partition.load(); err != nil {
 		return nil, err
 	}
 
@@ -166,6 +169,10 @@ func (p *Partition) ReadData(clientId string, numRecords int) ([]Data, error) {
 	offset.CurrentOffset += len(d)
 	p.clientOffset[clientId] = offset
 
+	if er := p.persistClientOffsets(); er != nil {
+		return nil, err
+	}
+
 	if err == io.EOF {
 		return nil, err
 	}
@@ -230,6 +237,38 @@ func (p *Partition) readData(offset, numRecords int) (data []Data, err error) {
 	return data, err
 }
 
+func (p *Partition) load() error {
+	if err := p.loadSizeIndexes(); err != nil {
+		return err
+	}
+
+	if err := p.loadClientOffsets(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (p *Partition) loadClientOffsets() error {
+	if _, err := os.Stat(p.offsetStorePath); os.IsNotExist(err) {
+		if _, er := os.OpenFile(p.offsetStorePath, os.O_CREATE, 0666); er != nil {
+			return er
+		}
+	}
+
+	configData, err := os.ReadFile(p.offsetStorePath)
+
+	if err != nil {
+		return err
+	}
+
+	if len(configData) == 0 {
+		return nil
+	}
+
+	return json.Unmarshal(configData, &p.clientOffset)
+}
+
 func (p *Partition) loadSizeIndexes() error {
 	if _, err := os.Stat(p.configLogPath); os.IsNotExist(err) {
 		if _, er := os.OpenFile(p.configLogPath, os.O_CREATE, 0666); er != nil {
@@ -273,12 +312,35 @@ func (p *Partition) persistSizeIndexes() error {
 	return nil
 }
 
+func (p *Partition) persistClientOffsets() error {
+	file, err := os.OpenFile(p.offsetStorePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
+
+	if err != nil {
+		return err
+	}
+
+	defer file.Close()
+
+	configData, err := json.Marshal(p.clientOffset)
+
+	if err != nil {
+		return err
+	}
+	_, err = file.Write(configData)
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (p *Partition) flushLogs() {
 	p.partitionLock.RLock()
 	defer p.partitionLock.RUnlock()
 
 	if p.lastLogOffset < p.logOffset {
-		file, err := os.OpenFile(p.logStorePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0666)
+		file, err := os.OpenFile(p.logStorePath, os.O_CREATE|os.O_WRONLY, 0666)
 
 		if err == nil {
 			if err = file.Sync(); err == nil {
@@ -287,7 +349,13 @@ func (p *Partition) flushLogs() {
 		}
 	}
 
-	file, err := os.OpenFile(p.configLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0666)
+	file, err := os.OpenFile(p.configLogPath, os.O_CREATE|os.O_WRONLY, 0666)
+
+	if err == nil {
+		file.Sync()
+	}
+
+	file, err = os.OpenFile(p.offsetStorePath, os.O_CREATE|os.O_WRONLY, 0666)
 
 	if err == nil {
 		file.Sync()

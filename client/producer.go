@@ -8,12 +8,12 @@ import (
 )
 
 type Producer struct {
-	brokerAddress string
+	serverAddress string
 }
 
-func NewProducer(brokerAddress string) *Producer {
+func NewProducer(serverAddress string) *Producer {
 	return &Producer{
-		brokerAddress: brokerAddress,
+		serverAddress: serverAddress,
 	}
 }
 
@@ -26,27 +26,7 @@ func (p *Producer) CreateTopic(topicName string, noOfPartition int) error {
 
 	noOfPartition = max(1, noOfPartition)
 
-	client, err := rpc.Dial("tcp", p.brokerAddress)
-
-	if err != nil {
-		return err
-	}
-
-	defer client.Close()
-
-	var response ServerResponse
-
-	client.Call(serverName, &ServerRequest{
-		Action:        createTopic,
-		TopicName:     topicName,
-		NoOfPartition: noOfPartition,
-	}, &response)
-
-	if !response.IsSuccess {
-		return errors.New(response.Error)
-	}
-
-	return nil
+	return createNewTopic(p.serverAddress, topicName, noOfPartition)
 }
 
 func (p *Producer) Produce(topicName, key, value string, partitionId int) error {
@@ -56,7 +36,11 @@ func (p *Producer) Produce(topicName, key, value string, partitionId int) error 
 		return errors.New("invalid topic name")
 	}
 
-	client, err := rpc.Dial("tcp", p.brokerAddress)
+	return produceNewTopic(p.serverAddress, topicName, key, value, partitionId)
+}
+
+func produceNewTopic(serverAddress, topicName, key, value string, partitionId int) error {
+	client, err := rpc.Dial("tcp", serverAddress)
 
 	if err != nil {
 		return err
@@ -66,7 +50,7 @@ func (p *Producer) Produce(topicName, key, value string, partitionId int) error 
 
 	var response ServerResponse
 
-	client.Call(serverName, &ServerRequest{
+	err = client.Call(serverName, &ServerRequest{
 		Action:      writeAction,
 		TopicName:   topicName,
 		Key:         key,
@@ -74,11 +58,50 @@ func (p *Producer) Produce(topicName, key, value string, partitionId int) error 
 		PartitionId: partitionId,
 	}, &response)
 
-	log.Println(response)
+	if err != nil {
+		return err
+	}
 
 	if !response.IsSuccess {
 		return errors.New(response.Error)
 	}
+
+	if response.IsRedirect {
+		return produceNewTopic(response.Location, topicName, key, value, partitionId)
+	}
+
 	log.Printf("Produced key = %s, value = %s \n", key, value)
+	return nil
+}
+
+func createNewTopic(serverAddress, topicName string, noOfPartition int) error {
+	client, err := rpc.Dial("tcp", serverAddress)
+
+	if err != nil {
+		return err
+	}
+
+	defer client.Close()
+
+	var response ServerResponse
+
+	err = client.Call(serverName, &ServerRequest{
+		Action:        createTopic,
+		TopicName:     topicName,
+		NoOfPartition: noOfPartition,
+	}, &response)
+
+	if err != nil {
+		return err
+	}
+
+	if !response.IsSuccess {
+		return errors.New(response.Error)
+	}
+
+	if response.IsRedirect {
+		return createNewTopic(response.Location, topicName, noOfPartition)
+	}
+
 	return nil
 }

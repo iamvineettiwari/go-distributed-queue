@@ -34,3 +34,9 @@ for this partition
         offset: "",
     }
     ```
+
+### TODOS 
+
+- [ ] Each topic will have partition attached to id (treat both as one)
+- [ ] Each server share topic-partition 
+- [ ] Each server knows about topic-partition address
