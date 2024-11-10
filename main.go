@@ -1,62 +1,145 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"log"
-	"strings"
+	"os"
+	"strconv"
 
 	"github.com/iamvineettiwari/go-distributed-queue/client"
 )
 
-func subscribeToTopic(data []byte) {
-	log.Println(string(data))
-}
-
-var isConsumer = flag.Bool("isConsumer", true, "Want to run consumer ?")
-var topic = flag.String("topic", "", "Topic name to consume / produce to")
+var mode = flag.String("mode", "", "which mode you want to run ? producer / consumer")
 
 func main() {
 	flag.Parse()
 
-	topicName := strings.TrimSpace(*topic)
+	switch *mode {
+	case "producer":
+		runProducer()
+	case "consumer":
+		runConsumer()
+	default:
+		log.Fatalf("invalid mode - %s\n", *mode)
+	}
+}
 
-	if topicName == "" {
-		log.Fatal("topic name is required")
+func runProducer() {
+	scanner := bufio.NewScanner(os.Stdin)
+
+	fmt.Print("Enter bootstrap server address: ")
+	bootstrapServerAddr := readNext(scanner)
+
+	if bootstrapServerAddr == "" {
+		log.Fatal("invalid bootstrap server addr")
 	}
 
-	if *isConsumer {
-		consumer := client.NewConsumer("127.0.0.1:8080")
-		consumer.Subscribe(topicName, -1, subscribeToTopic)
+	producer := client.NewProducer(bootstrapServerAddr)
 
-		select {}
-	} else {
-		producer := client.NewProducer("127.0.0.1:8080")
-		producer.CreateTopic(topicName, 3)
+	for {
 
-		for {
-			var key, value string
+		fmt.Print("Enter mode:\n1. Produce\n2. Create Topic\n")
+		modeOpt := readNext(scanner)
 
-			fmt.Print("Enter key: ")
-			_, err := fmt.Scanln(&key)
-			if err != nil {
-				log.Println("Error occurred while reading key from stdin:", err)
-				continue
-			}
-
-			fmt.Print("Enter value: ")
-			_, err = fmt.Scanln(&value)
-			if err != nil {
-				log.Println("Error occurred while reading value from stdin:", err)
-				continue
-			}
-
-			err = producer.Produce(topicName, key, value, -1)
-			if err != nil {
-				log.Println("Error occurred while producing message:", err)
-			} else {
-				log.Printf("Produced message to topic %s with key: %s, value: %s\n", topicName, key, value)
-			}
+		switch modeOpt {
+		case "1":
+			produce(scanner, producer)
+		case "2":
+			createNewTopic(scanner, producer)
+		default:
+			log.Println("invalid input")
 		}
 	}
+}
+
+func runConsumer() {
+	scanner := bufio.NewScanner(os.Stdin)
+
+	fmt.Print("Enter bootstrap server address: ")
+	bootstrapServerAddr := readNext(scanner)
+
+	if bootstrapServerAddr == "" {
+		log.Fatal("invalid bootstrap server addr")
+	}
+
+	consumer := client.NewConsumer(bootstrapServerAddr)
+
+	fmt.Print("Enter topic: ")
+	topic := readNext(scanner)
+
+	fmt.Print("Enter partitionId (0 - to read from all the paritions, greater that 0 to read from specific partition): ")
+	partition := readNext(scanner)
+
+	partitionId, err := strconv.Atoi(partition)
+
+	if err != nil {
+		log.Println("errror occured ", err)
+		return
+	}
+
+	consumer.Subscribe(topic, partitionId, func(data []byte) {
+		log.Println(string(data))
+	})
+
+	select {}
+}
+
+func produce(scanner *bufio.Scanner, producer *client.Producer) {
+	fmt.Print("Enter topic: ")
+	topic := readNext(scanner)
+
+	fmt.Print("Enter key: ")
+	key := readNext(scanner)
+
+	fmt.Print("Enter value: ")
+	value := readNext(scanner)
+
+	fmt.Print("Enter partitionId (0 - to produce in random partition, greater that 0 to produce to specific partition): ")
+	partition := readNext(scanner)
+
+	partitionId, err := strconv.Atoi(partition)
+
+	if err != nil {
+		log.Println("errror occured ", err)
+		return
+	}
+
+	err = producer.Produce(topic, key, value, partitionId)
+
+	if err != nil {
+		log.Println(err)
+	}
+
+}
+
+func createNewTopic(scanner *bufio.Scanner, producer *client.Producer) {
+	fmt.Print("Enter topic: ")
+	topic := readNext(scanner)
+
+	fmt.Print("Enter partitions: ")
+	partitions := readNext(scanner)
+
+	totalPartitions, err := strconv.Atoi(partitions)
+
+	if err != nil {
+		log.Println("errror occured ", err)
+		return
+	}
+
+	err = producer.CreateTopic(topic, totalPartitions)
+
+	if err != nil {
+		log.Println(err)
+	}
+}
+
+func readNext(scanner *bufio.Scanner) string {
+	scanner.Scan()
+
+	if err := scanner.Err(); err != nil {
+		log.Fatalf("Error occured while reading from STDIN : %v\n", err)
+	}
+	return scanner.Text()
 }
