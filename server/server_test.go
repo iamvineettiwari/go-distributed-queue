@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iamvineettiwari/go-distributed-queue/constants"
 	"github.com/iamvineettiwari/go-distributed-queue/server"
 	"github.com/stretchr/testify/assert"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -47,36 +48,36 @@ func TestServerProcessCommand(t *testing.T) {
 	assert.NoError(t, err)
 	defer client.Close()
 
-	createReq := &server.ServerRequest{
+	createReq := &constants.ServerRequest{
 		Action:        "CREATE_TOPIC",
 		TopicName:     "TestTopic",
 		NoOfPartition: 1,
 	}
-	createRes := &server.ServerResponse{}
+	createRes := &constants.ServerResponse{}
 
 	err = client.Call("Server.ProcessCommand", createReq, createRes)
 	assert.NoError(t, err)
 	assert.True(t, createRes.IsSuccess)
 
-	writeReq := &server.ServerRequest{
+	writeReq := &constants.ServerRequest{
 		Action:      "WRITE",
 		TopicName:   "TestTopic",
 		PartitionId: 1,
 		Key:         "test-key",
 		Value:       "test-value",
 	}
-	writeRes := &server.ServerResponse{}
+	writeRes := &constants.ServerResponse{}
 
 	err = client.Call("Server.ProcessCommand", writeReq, writeRes)
 	assert.NoError(t, err)
 	assert.True(t, writeRes.IsSuccess)
 
-	readReq := &server.ServerRequest{
+	readReq := &constants.ServerRequest{
 		Action:      "READ",
 		TopicName:   "TestTopic",
 		PartitionId: 1,
 	}
-	readRes := &server.ServerResponse{}
+	readRes := &constants.ServerResponse{}
 
 	err = client.Call("Server.ProcessCommand", readReq, readRes)
 	assert.NoError(t, err)

@@ -1,6 +1,8 @@
 package topic
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/iamvineettiwari/go-distributed-queue/topic/partition"
 )
@@ -58,4 +60,12 @@ func (t *Topic) Read(clientId string, numRecords int) (data []partition.Data, er
 
 func (t *Topic) Write(key, value string) error {
 	return t.partition.WriteData(key, value)
+}
+
+func (t *Topic) InitClient(clientId string) error {
+	return t.partition.InitClient(clientId)
+}
+
+func (t *Topic) Ack(clientId string, offset int, timestamp time.Time) error {
+	return t.partition.Ack(clientId, offset, timestamp)
 }

@@ -2,9 +2,10 @@ package client
 
 import (
 	"errors"
-	"log"
 	"net/rpc"
 	"strings"
+
+	"github.com/iamvineettiwari/go-distributed-queue/constants"
 )
 
 type Producer struct {
@@ -48,10 +49,10 @@ func produceNewTopic(serverAddress, topicName, key, value string, partitionId in
 
 	defer client.Close()
 
-	var response ServerResponse
+	var response constants.ServerResponse
 
-	err = client.Call(serverName, &ServerRequest{
-		Action:      writeAction,
+	err = client.Call(constants.ServerName, &constants.ServerRequest{
+		Action:      constants.WriteAction,
 		TopicName:   topicName,
 		Key:         key,
 		Value:       value,
@@ -69,8 +70,6 @@ func produceNewTopic(serverAddress, topicName, key, value string, partitionId in
 	if response.IsRedirect {
 		return produceNewTopic(response.Location, topicName, key, value, partitionId)
 	}
-
-	log.Printf("Produced key = %s, value = %s \n", key, value)
 	return nil
 }
 
@@ -83,10 +82,10 @@ func createNewTopic(serverAddress, topicName string, noOfPartition int) error {
 
 	defer client.Close()
 
-	var response ServerResponse
+	var response constants.ServerResponse
 
-	err = client.Call(serverName, &ServerRequest{
-		Action:        createTopic,
+	err = client.Call(constants.ServerName, &constants.ServerRequest{
+		Action:        constants.CreateTopic,
 		TopicName:     topicName,
 		NoOfPartition: noOfPartition,
 	}, &response)

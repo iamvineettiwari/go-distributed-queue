@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/iamvineettiwari/go-distributed-queue/client"
 )
@@ -64,10 +65,21 @@ func runConsumer() {
 		log.Fatal("invalid bootstrap server addr")
 	}
 
-	consumer := client.NewConsumer(bootstrapServerAddr)
+	fmt.Print("Enter client id (leave empty to generate new): ")
+	clientId := readNext(scanner)
+
+	fmt.Print("Enter poll time (in ms): ")
+	pollTimeStr := readNext(scanner)
+
+	pollTime, err := strconv.Atoi(pollTimeStr)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	fmt.Print("Enter topic: ")
 	topic := readNext(scanner)
+
+	consumer := client.NewConsumer(clientId, bootstrapServerAddr, topic, time.Duration(pollTime)*time.Millisecond)
 
 	fmt.Print("Enter partitionId (0 - to read from all the paritions, greater that 0 to read from specific partition): ")
 	partition := readNext(scanner)
@@ -79,8 +91,9 @@ func runConsumer() {
 		return
 	}
 
-	consumer.Subscribe(topic, partitionId, func(data []byte) {
-		log.Println(string(data))
+	consumer.Subscribe(partitionId, func(data *client.Data) {
+		log.Printf("DATA - %v\n", data)
+		data.Ack()
 	})
 
 	select {}
@@ -110,8 +123,9 @@ func produce(scanner *bufio.Scanner, producer *client.Producer) {
 
 	if err != nil {
 		log.Println(err)
+	} else {
+		log.Println("successfully produced message")
 	}
-
 }
 
 func createNewTopic(scanner *bufio.Scanner, producer *client.Producer) {

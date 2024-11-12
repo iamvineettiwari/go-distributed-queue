@@ -3,6 +3,7 @@ package partition
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,7 +12,7 @@ import (
 	"time"
 )
 
-var LogsFlushTime = 200 * time.Millisecond
+var LogsFlushTime = 5 * time.Minute
 
 type Data struct {
 	Key       string    `json:"key"`
@@ -152,22 +153,22 @@ func (p *Partition) ReadData(clientId string, numRecords int) ([]Data, error) {
 	p.partitionLock.Lock()
 	defer p.partitionLock.Unlock()
 
-	offset, present := p.clientOffset[clientId]
+	clientOffset, present := p.clientOffset[clientId]
 
 	if !present {
-		offset = &ClientOffset{
+		clientOffset = &ClientOffset{
 			CurrentOffset: 0,
 		}
 	}
 
-	d, err := p.readData(offset.CurrentOffset, numRecords)
+	d, err := p.readData(clientOffset.CurrentOffset, numRecords)
 
 	if err != nil && err != io.EOF {
 		return nil, err
 	}
 
-	offset.CurrentOffset += len(d)
-	p.clientOffset[clientId] = offset
+	clientOffset.CurrentOffset += len(d)
+	p.clientOffset[clientId] = clientOffset
 
 	if er := p.persistClientOffsets(); er != nil {
 		return nil, err
@@ -178,6 +179,58 @@ func (p *Partition) ReadData(clientId string, numRecords int) ([]Data, error) {
 	}
 
 	return d, err
+}
+
+func (p *Partition) Ack(clientId string, newOffset int, timestamp time.Time) error {
+	p.partitionLock.Lock()
+	defer p.partitionLock.Unlock()
+
+	offset, exists := p.clientOffset[clientId]
+
+	if !exists {
+		return errors.New("invalid request")
+	}
+
+	if offset.LastCommitedOffset != nil && offset.LastCommitedOffset.Offset >= newOffset {
+		return nil
+	}
+
+	offset.CurrentOffset = max(offset.CurrentOffset, newOffset)
+	offset.LastCommitedOffset = &LastCommitedOffset{
+		Timestamp: timestamp,
+		Offset:    newOffset,
+	}
+	p.clientOffset[clientId] = offset
+	p.persistClientOffsets()
+	return nil
+}
+
+func (p *Partition) InitClient(clientId string) error {
+	p.partitionLock.Lock()
+	defer p.partitionLock.Unlock()
+
+	offset, exists := p.clientOffset[clientId]
+
+	if !exists {
+		offset = &ClientOffset{
+			CurrentOffset: 0,
+		}
+	}
+
+	if offset.LastCommitedOffset == nil {
+		offset.CurrentOffset = 0
+	} else {
+		offset.CurrentOffset = offset.LastCommitedOffset.Offset
+	}
+
+	p.clientOffset[clientId] = offset
+	err := p.persistClientOffsets()
+
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (p *Partition) CleanUp() {
@@ -339,25 +392,25 @@ func (p *Partition) flushLogs() {
 	p.partitionLock.RLock()
 	defer p.partitionLock.RUnlock()
 
-	if p.lastLogOffset < p.logOffset {
-		file, err := os.OpenFile(p.logStorePath, os.O_CREATE|os.O_WRONLY, 0666)
+	go flush(p.configLogPath)
+	go flush(p.offsetStorePath)
 
+	if p.lastLogOffset < p.logOffset {
+		err := flush(p.logStorePath)
 		if err == nil {
-			if err = file.Sync(); err == nil {
-				p.lastLogOffset = p.logOffset
-			}
+			p.lastLogOffset = p.logOffset
+
 		}
 	}
+}
 
-	file, err := os.OpenFile(p.configLogPath, os.O_CREATE|os.O_WRONLY, 0666)
+func flush(filePath string) error {
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY, 0666)
 
-	if err == nil {
-		file.Sync()
+	if err != nil {
+		return err
 	}
+	defer file.Close()
 
-	file, err = os.OpenFile(p.offsetStorePath, os.O_CREATE|os.O_WRONLY, 0666)
-
-	if err == nil {
-		file.Sync()
-	}
+	return file.Sync()
 }

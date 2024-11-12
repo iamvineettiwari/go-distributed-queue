@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/iamvineettiwari/go-distributed-queue/constants"
 	"github.com/iamvineettiwari/go-distributed-queue/coordinator"
 	"github.com/iamvineettiwari/go-distributed-queue/topic"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -23,41 +24,20 @@ import (
 
 const serverKeyPrefix = "/servers/"
 const topicKeyPrefix = "/topics/"
+const offsetsPrefix = "/offsets/"
 
 var LogsFlushTime = 200 * time.Millisecond
 
 var configPath = "config/"
 var errInternalServer = errors.New("something went wrong")
 
-// externals
-
-var readAction = "READ"
-var writeAction = "WRITE"
-var createTopic = "CREATE_TOPIC"
-
-// internals
-
-var internalReadAction = "READ_INTERNAL"
-var internalWriteAction = "WRITE_INTERNAL"
-var internalCreateTopic = "CREATE_TOPIC_INTERNAL"
-
-type ServerRequest struct {
-	Action        string
-	TopicName     string
-	NoOfPartition int
-	Key           string
-	Value         string
-	PartitionId   int
-	ClientId      string
-}
-
-type ServerResponse struct {
-	Error      string
-	IsSuccess  bool
-	Data       []byte
-	IsRedirect bool
-	Location   string
-}
+const (
+	internalReadAction  = "READ_INTERNAL"
+	internalWriteAction = "WRITE_INTERNAL"
+	internalCreateTopic = "CREATE_TOPIC_INTERNAL"
+	internalAckMessage  = "ACK_MESSAGE_INTERNAL"
+	internalInitClient  = "INIT_CLIENT_INTERNAL"
+)
 
 type topicConfig struct {
 	Id             string `json:"id"`
@@ -106,24 +86,32 @@ func NewServer(address string, noOfMessagePerRead int, coordinatorAddress []stri
 	return server, nil
 }
 
-func (s *Server) ProcessCommand(req *ServerRequest, res *ServerResponse) error {
+func (s *Server) ProcessCommand(req *constants.ServerRequest, res *constants.ServerResponse) error {
 	if req.TopicName == "" {
 		return errors.New("invalid request, topicName is required")
 	}
 
 	switch req.Action {
-	case readAction:
+	case constants.InitClient:
+		return s.handleClientInitReq(req, res)
+	case internalInitClient:
+		return s.handleInternalClientInitReq(req, res)
+	case constants.ReadAction:
 		return s.handleReadReq(req, res)
 	case internalReadAction:
 		return s.handleInternalReadReq(req, res)
-	case writeAction:
+	case constants.WriteAction:
 		return s.handleWriteReq(req, res)
 	case internalWriteAction:
 		return s.handleInternalWriteReq(req, res)
-	case createTopic:
+	case constants.CreateTopic:
 		return s.handleCreateTopicReq(req, res)
 	case internalCreateTopic:
 		return s.handleInternalCreateTopicReq(req, res)
+	case constants.AckMessage:
+		return s.handleAck(req, res)
+	case internalAckMessage:
+		return s.handleInternalAck(req, res)
 	default:
 		res.Error = "Action not found"
 		return nil
@@ -217,7 +205,82 @@ func (s *Server) getTopicConfig(topicName string) (*topicConfig, error) {
 	return nil, fmt.Errorf("topic (%s) not found", topicName)
 }
 
-func (s *Server) handleReadReq(req *ServerRequest, res *ServerResponse) error {
+func (s *Server) handleClientInitReq(req *constants.ServerRequest, res *constants.ServerResponse) error {
+	topicConfig, err := s.getTopicConfig(req.TopicName)
+
+	if err != nil {
+		identity := s.getIdentity(req.TopicName, max(1, req.PartitionId))
+		identityServer, errSrv := s.getServerForIdentity(identity)
+
+		if errSrv != nil {
+			return err
+		}
+
+		res.IsRedirect = true
+		res.Location = identityServer
+		return nil
+	}
+
+	data := []byte{}
+
+	for partitionId := 1; partitionId <= topicConfig.TotalParitions; partitionId++ {
+		identity := s.getIdentity(req.TopicName, partitionId)
+		serverAddr, err := s.getServerForIdentity(identity)
+
+		if err != nil {
+			continue
+		}
+
+		if serverAddr != s.address {
+			remoteResp := &constants.ServerResponse{}
+
+			remoteErr := s.performInternalCall(&constants.ServerRequest{
+				Action:      internalInitClient,
+				TopicName:   req.TopicName,
+				PartitionId: partitionId,
+				ClientId:    req.ClientId,
+			}, remoteResp, serverAddr)
+
+			if remoteErr != nil {
+				return remoteErr
+			}
+		} else {
+			err := s.initClient(identity, req.TopicName, req.ClientId)
+			if err != nil {
+				return nil
+			}
+		}
+	}
+
+	res.Data = data
+	res.IsSuccess = true
+	return nil
+}
+
+func (s *Server) handleAck(req *constants.ServerRequest, res *constants.ServerResponse) error {
+	identity := s.getIdentity(req.TopicName, req.PartitionId)
+	serverAddr, err := s.getServerForIdentity(identity)
+
+	if err != nil {
+		return err
+	}
+
+	if serverAddr != s.address {
+		req.Action = internalAckMessage
+		return s.performInternalCall(req, res, serverAddr)
+	}
+
+	err = s.ack(identity, req.TopicName, req.ClientId, req.Offset, req.TimeStamp)
+
+	if err != nil {
+		return err
+	}
+
+	res.IsSuccess = true
+	return nil
+}
+
+func (s *Server) handleReadReq(req *constants.ServerRequest, res *constants.ServerResponse) error {
 	topicConfig, err := s.getTopicConfig(req.TopicName)
 
 	if err != nil {
@@ -240,7 +303,6 @@ func (s *Server) handleReadReq(req *ServerRequest, res *ServerResponse) error {
 		}
 
 		identity := s.getIdentity(req.TopicName, req.PartitionId)
-
 		serverAddr, err := s.getServerForIdentity(identity)
 
 		if err != nil {
@@ -251,7 +313,7 @@ func (s *Server) handleReadReq(req *ServerRequest, res *ServerResponse) error {
 			res.IsRedirect = true
 			res.Location = serverAddr
 
-			return s.performInternalCall(&ServerRequest{
+			return s.performInternalCall(&constants.ServerRequest{
 				Action:      internalReadAction,
 				TopicName:   req.TopicName,
 				PartitionId: req.PartitionId,
@@ -273,7 +335,7 @@ func (s *Server) handleReadReq(req *ServerRequest, res *ServerResponse) error {
 	return s.handleReadTopicAllPartitionReq(req, res, topicConfig)
 }
 
-func (s *Server) handleReadTopicAllPartitionReq(req *ServerRequest, res *ServerResponse, config *topicConfig) error {
+func (s *Server) handleReadTopicAllPartitionReq(req *constants.ServerRequest, res *constants.ServerResponse, config *topicConfig) error {
 	data := []byte{}
 
 	for partitionId := 1; partitionId <= config.TotalParitions; partitionId++ {
@@ -286,9 +348,9 @@ func (s *Server) handleReadTopicAllPartitionReq(req *ServerRequest, res *ServerR
 		}
 
 		if serverAddr != s.address {
-			curPartitionResp := &ServerResponse{}
+			curPartitionResp := &constants.ServerResponse{}
 
-			err := s.performInternalCall(&ServerRequest{
+			err := s.performInternalCall(&constants.ServerRequest{
 				Action:      internalReadAction,
 				TopicName:   req.TopicName,
 				PartitionId: partitionId,
@@ -318,7 +380,7 @@ func (s *Server) handleReadTopicAllPartitionReq(req *ServerRequest, res *ServerR
 	return nil
 }
 
-func (s *Server) handleWriteReq(req *ServerRequest, res *ServerResponse) error {
+func (s *Server) handleWriteReq(req *constants.ServerRequest, res *constants.ServerResponse) error {
 	topicConfig, err := s.getTopicConfig(req.TopicName)
 
 	if err != nil {
@@ -351,7 +413,7 @@ func (s *Server) handleWriteReq(req *ServerRequest, res *ServerResponse) error {
 	}
 
 	if serverToWrite != s.address {
-		return s.performInternalCall(&ServerRequest{
+		return s.performInternalCall(&constants.ServerRequest{
 			Action:      internalWriteAction,
 			TopicName:   req.TopicName,
 			PartitionId: partitionId,
@@ -370,7 +432,7 @@ func (s *Server) handleWriteReq(req *ServerRequest, res *ServerResponse) error {
 	return nil
 }
 
-func (s *Server) handleCreateTopicReq(req *ServerRequest, res *ServerResponse) error {
+func (s *Server) handleCreateTopicReq(req *constants.ServerRequest, res *constants.ServerResponse) error {
 	topicName := req.TopicName
 	noOfPartitions := max(1, req.NoOfPartition)
 
@@ -382,12 +444,12 @@ func (s *Server) handleCreateTopicReq(req *ServerRequest, res *ServerResponse) e
 		}
 
 		if s.address != serverAddr {
-			err := s.performInternalCall(&ServerRequest{
+			err := s.performInternalCall(&constants.ServerRequest{
 				Action:        internalCreateTopic,
 				TopicName:     topicName,
 				PartitionId:   partitionId,
 				NoOfPartition: noOfPartitions,
-			}, &ServerResponse{}, serverAddr)
+			}, &constants.ServerResponse{}, serverAddr)
 
 			if err != nil {
 				return err
@@ -406,7 +468,31 @@ func (s *Server) handleCreateTopicReq(req *ServerRequest, res *ServerResponse) e
 	return nil
 }
 
-func (s *Server) handleInternalCreateTopicReq(req *ServerRequest, res *ServerResponse) error {
+func (s *Server) handleInternalClientInitReq(req *constants.ServerRequest, res *constants.ServerResponse) error {
+	identity := s.getIdentity(req.TopicName, req.PartitionId)
+	err := s.initClient(identity, req.TopicName, req.ClientId)
+
+	if err != nil {
+		return err
+	}
+
+	res.IsSuccess = true
+	return nil
+}
+
+func (s *Server) handleInternalAck(req *constants.ServerRequest, res *constants.ServerResponse) error {
+	identity := s.getIdentity(req.TopicName, req.PartitionId)
+	err := s.ack(identity, req.TopicName, req.ClientId, req.Offset, req.TimeStamp)
+
+	if err != nil {
+		return err
+	}
+
+	res.IsSuccess = true
+	return nil
+}
+
+func (s *Server) handleInternalCreateTopicReq(req *constants.ServerRequest, res *constants.ServerResponse) error {
 	topicName := req.TopicName
 	partitionId := req.PartitionId
 
@@ -422,7 +508,7 @@ func (s *Server) handleInternalCreateTopicReq(req *ServerRequest, res *ServerRes
 	return nil
 }
 
-func (s *Server) handleInternalWriteReq(req *ServerRequest, res *ServerResponse) error {
+func (s *Server) handleInternalWriteReq(req *constants.ServerRequest, res *constants.ServerResponse) error {
 	topicName := req.TopicName
 	partitionId := req.PartitionId
 
@@ -438,7 +524,7 @@ func (s *Server) handleInternalWriteReq(req *ServerRequest, res *ServerResponse)
 	return nil
 }
 
-func (s *Server) handleInternalReadReq(req *ServerRequest, res *ServerResponse) error {
+func (s *Server) handleInternalReadReq(req *constants.ServerRequest, res *constants.ServerResponse) error {
 	topicName := req.TopicName
 	identity := s.getIdentity(topicName, req.PartitionId)
 	data, err := s.read(identity, topicName, req.ClientId)
@@ -452,7 +538,7 @@ func (s *Server) handleInternalReadReq(req *ServerRequest, res *ServerResponse) 
 	return nil
 }
 
-func (s *Server) performInternalCall(req *ServerRequest, res *ServerResponse, serverAddress string) error {
+func (s *Server) performInternalCall(req *constants.ServerRequest, res *constants.ServerResponse, serverAddress string) error {
 	client, err := rpc.Dial("tcp", serverAddress)
 
 	if err != nil {
@@ -527,13 +613,52 @@ func (s *Server) read(id, topicName, clientId string) ([]byte, error) {
 		return nil, nil
 	}
 
-	resp, err := json.Marshal(data)
+	resp := []byte{}
 
-	if err != nil {
-		return nil, err
+	for _, item := range data {
+		curData, err := json.Marshal(item)
+
+		if err != nil {
+			return nil, err
+		}
+
+		curData = append(curData, '\n')
+		resp = append(resp, curData...)
 	}
 
 	return resp, nil
+}
+
+func (s *Server) ack(id, topicName, clientId string, offset int, timestamp time.Time) error {
+	s.serverLock.RLock()
+	defer s.serverLock.RUnlock()
+
+	topic, topicExists := s.topics[id]
+
+	if !topicExists {
+		return fmt.Errorf("topic (%s) does not exists", topicName)
+	}
+
+	return topic.Ack(clientId, offset, timestamp)
+}
+
+func (s *Server) initClient(id, topicName, clientId string) error {
+	s.serverLock.RLock()
+	defer s.serverLock.RUnlock()
+
+	topic, topicExists := s.topics[id]
+
+	if !topicExists {
+		return fmt.Errorf("topic (%s) does not exists", topicName)
+	}
+
+	err := topic.InitClient(clientId)
+
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (s *Server) loadTopicConfigs() error {
