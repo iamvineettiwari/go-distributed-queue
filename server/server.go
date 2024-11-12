@@ -62,7 +62,7 @@ type Server struct {
 }
 
 func NewServer(address string, noOfMessagePerRead int, coordinatorAddress []string) (*Server, error) {
-	rootPath := fmt.Sprintf("./%s/%s", address, "data")
+	rootPath := fmt.Sprintf("./gdq/%s/%s", address, "data")
 	configPath := filepath.Join(rootPath, "/config/")
 
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
