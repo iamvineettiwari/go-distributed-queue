@@ -1,6 +1,6 @@
 ### Introduction
 
-In this project, I aimed to explore and understand distributed systems by building a distributed queue. The system is designed to manage topics, where each topic’s partition is distributed across multiple servers. To ensure coordination and consistency across these servers, I used etcd as a key component. 
+In this project, I aimed to explore and understand distributed systems by building a distributed queue. The system is designed to manage topics, where each topic’s partition is distributed across multiple servers. To ensure coordination and consistency across these servers, I used etcd as a key component. Client - Server communication is TCP base RPC calls.
 
 
 **TODOS**
