@@ -24,7 +24,6 @@ import (
 
 const serverKeyPrefix = "/servers/"
 const topicKeyPrefix = "/topics/"
-const offsetsPrefix = "/offsets/"
 
 var LogsFlushTime = 200 * time.Millisecond
 
