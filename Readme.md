@@ -21,3 +21,11 @@ cd build/ && ./client -mode=producer
 cd build/ && ./client -mode=consumer
 ```
 
+# TODOS
+
+- [ ] Implement replication
+- [ ] Implement replica leader election
+- [ ] Implement WAL
+- [ ] Implement offset management at client
+- [ ] Improve client with more configurations 
+- [ ] Improve test coverage
