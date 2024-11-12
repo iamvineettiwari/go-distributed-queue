@@ -726,8 +726,6 @@ func (s *Server) saveTopicConfig() {
 		}
 	}
 
-	print(string(dataToWrite))
-
 	file.Write(dataToWrite)
 }
 

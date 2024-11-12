@@ -9,6 +9,7 @@ In this project, I aimed to explore and understand distributed systems by buildi
 - [ ] Implement WAL
 - [ ] Implement offset management at client
 - [ ] Improve client with more configurations 
+- [ ] Refactor Server and Partitions for modularity
 - [ ] Improve test coverage
 
 ### Start Command
